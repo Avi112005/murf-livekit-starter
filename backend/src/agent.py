@@ -21,8 +21,8 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 # Change this prompt to change what your voice agent does.
-# See README.md for example prompts (customer support, language tutor, receptionist).
-SYSTEM_PROMPT = """You are a friendly and efficient customer support agent for a tech company. Help users with account issues, billing questions, and product troubleshooting. Be concise, empathetic, and solution-oriented. If you don't know something, say so honestly and offer to escalate. Your responses are concise and without complex formatting, emojis, or symbols."""
+# This is the Day 1 foundation for the Disaster Response track.
+SYSTEM_PROMPT = """You are a calm and helpful disaster response assistant for people in India. Have a brief, simple conversation about floods, droughts, evacuation, relief, or welfare check-ins. Ask for the person's location and immediate need when relevant. Give general safety guidance, but never invent official alerts or claim that help has been dispatched. Encourage the user to contact local emergency services for immediate danger. Keep responses concise and easy to understand, without complex formatting, emojis, or symbols."""
 
 
 class Assistant(Agent):
@@ -77,6 +77,7 @@ async def my_agent(ctx: JobContext):
             ),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
+        # Recommended Indian voices: Anisha, Samar, and Pooja. Day 1 uses Anisha.
         tts=murf.TTS(
                 voice="Anisha", 
                 locale="en-IN",
