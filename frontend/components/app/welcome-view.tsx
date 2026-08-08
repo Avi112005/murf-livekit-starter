@@ -1,3 +1,4 @@
+import { ArrowUpRight, MapPinned, ShieldAlert, Waves } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 function WelcomeImage() {
@@ -20,46 +21,124 @@ function WelcomeImage() {
 
 interface WelcomeViewProps {
   startButtonText: string;
-  onStartCall: () => void;
+  onStartCall: () => void | Promise<void>;
+  errorMessage?: string | null;
 }
 
 export const WelcomeView = ({
   startButtonText,
   onStartCall,
+  errorMessage,
   ref,
 }: React.ComponentProps<'div'> & WelcomeViewProps) => {
   return (
-    <div ref={ref}>
-      <section className="bg-background flex flex-col items-center justify-center text-center">
-        <WelcomeImage />
+    <div
+      ref={ref}
+      className="relative min-h-svh overflow-hidden bg-[#f5f0e8] text-[#173c39] dark:bg-[#102523] dark:text-[#eff8ed]"
+    >
+      <div className="pointer-events-none absolute -top-32 right-[-12%] size-[520px] rounded-full bg-[#e6b36b]/25 blur-3xl dark:bg-[#c96b45]/20" />
+      <div className="pointer-events-none absolute bottom-[-18%] left-[-10%] size-[420px] rounded-full bg-[#91cdb2]/30 blur-3xl dark:bg-[#277a68]/20" />
 
-        <p className="text-foreground max-w-prose pt-1 leading-6 font-medium">
-          Chat live with your voice AI agent
-        </p>
+      <section className="relative mx-auto flex min-h-svh w-full max-w-6xl flex-col justify-center px-5 py-24 sm:px-8 lg:px-12">
+        <div className="mb-12 flex items-center gap-3 text-xs font-bold tracking-[0.24em] text-[#277a68] uppercase dark:text-[#8bd9bb]">
+          <span className="size-2 rounded-full bg-[#d66e46] shadow-[0_0_0_5px_rgba(214,110,70,0.15)]" />
+          Voice check-in / Disaster response
+        </div>
 
-        <Button
-          size="lg"
-          onClick={onStartCall}
-          className="mt-6 w-64 rounded-full font-mono text-xs font-bold tracking-wider uppercase"
-        >
-          {startButtonText}
-        </Button>
+        <div className="grid items-center gap-14 lg:grid-cols-[1.1fr_0.9fr] lg:gap-24">
+          <div>
+            <p className="mb-5 max-w-xl text-sm leading-6 text-[#47716a] dark:text-[#a6c9bd]">
+              A calm first conversation for floods, droughts, relief requests, and welfare
+              check-ins across India.
+            </p>
+            <h1 className="max-w-3xl text-5xl leading-[0.98] font-semibold tracking-[-0.06em] text-balance sm:text-7xl">
+              When the situation is urgent, start with what matters.
+            </h1>
+            <p className="mt-7 max-w-xl text-base leading-7 text-[#47716a] dark:text-[#b3d3c8] sm:text-lg">
+              Aapda Sahaayak helps you describe what happened, where you are, and who needs
+              support. It does not invent alerts or dispatch rescue.
+            </p>
+
+            <div className="mt-10 flex flex-col items-start gap-4 sm:flex-row sm:items-center">
+              <Button
+                size="lg"
+                onClick={onStartCall}
+                className="h-14 rounded-full bg-[#173c39] px-7 font-mono text-xs font-bold tracking-[0.12em] text-[#f5f0e8] uppercase shadow-xl shadow-[#173c39]/15 transition-transform hover:-translate-y-0.5 hover:bg-[#285a54] dark:bg-[#eff8ed] dark:text-[#173c39] dark:hover:bg-white"
+              >
+                {startButtonText}
+                <ArrowUpRight className="ml-2 size-4" />
+              </Button>
+              <span className="text-xs font-medium text-[#6c9288] dark:text-[#9bc0b2]">
+                Uses an Indian voice powered by Murf Falcon
+              </span>
+            </div>
+
+            {errorMessage && (
+              <div
+                role="alert"
+                className="mt-6 flex max-w-xl items-start gap-3 rounded-2xl border border-[#bd5c42]/30 bg-[#fff2ed] p-4 text-sm leading-6 text-[#8d3e2d] dark:bg-[#3b2420] dark:text-[#ffc3ad]"
+              >
+                <ShieldAlert className="mt-0.5 size-5 shrink-0" />
+                <span>{errorMessage}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="relative">
+            <div className="rounded-[2rem] border border-[#c2d7c9] bg-[#e9f1e8]/80 p-3 shadow-2xl shadow-[#315e54]/10 backdrop-blur dark:border-[#315c54] dark:bg-[#183a35]/80">
+              <div className="rounded-[1.5rem] border border-[#cbded1] bg-[#f8fbf6] p-6 dark:border-[#315c54] dark:bg-[#15302d] sm:p-8">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-mono text-[10px] font-bold tracking-[0.2em] text-[#6c9288] uppercase dark:text-[#9bc0b2]">
+                      Ready state
+                    </p>
+                    <p className="mt-2 text-xl font-semibold">Your safety check-in</p>
+                  </div>
+                  <div className="flex size-12 items-center justify-center rounded-2xl bg-[#f6dfc2] text-[#b8623d] dark:bg-[#4a3228] dark:text-[#f0a27c]">
+                    <Waves className="size-6" />
+                  </div>
+                </div>
+
+                <div className="mt-8 space-y-3">
+                  <div className="flex items-center gap-4 rounded-2xl bg-[#edf4ed] p-4 dark:bg-[#1d453e]">
+                    <MapPinned className="size-5 text-[#277a68] dark:text-[#8bd9bb]" />
+                    <div>
+                      <p className="text-sm font-semibold">Where are you?</p>
+                      <p className="text-xs text-[#6c9288] dark:text-[#a6c9bd]">Location and access needs</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 rounded-2xl bg-[#edf4ed] p-4 dark:bg-[#1d453e]">
+                    <Waves className="size-5 text-[#277a68] dark:text-[#8bd9bb]" />
+                    <div>
+                      <p className="text-sm font-semibold">What happened?</p>
+                      <p className="text-xs text-[#6c9288] dark:text-[#a6c9bd]">Flood, drought, or relief request</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 rounded-2xl bg-[#edf4ed] p-4 dark:bg-[#1d453e]">
+                    <ShieldAlert className="size-5 text-[#b8623d] dark:text-[#f0a27c]" />
+                    <div>
+                      <p className="text-sm font-semibold">Who needs support?</p>
+                      <p className="text-xs text-[#6c9288] dark:text-[#a6c9bd]">People affected and urgency</p>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="mt-7 border-t border-[#d5e4d6] pt-5 text-xs leading-5 text-[#6c9288] dark:border-[#315c54] dark:text-[#a6c9bd]">
+                  No OTPs. No passwords. No unofficial evacuation orders.
+                </p>
+              </div>
+            </div>
+            <div className="absolute -right-4 -bottom-5 -z-10 h-24 w-36 rounded-full bg-[#d66e46]/25 blur-2xl" />
+          </div>
+        </div>
+
+        <div className="mt-16 flex items-center gap-3 text-xs text-[#6c9288] dark:text-[#9bc0b2]">
+          <span className="rounded-full border border-[#c2d7c9] px-3 py-1.5 font-mono text-[10px] tracking-[0.16em] uppercase dark:border-[#315c54]">
+            Ready
+          </span>
+          <span>Tap once, allow your microphone, and speak naturally.</span>
+        </div>
       </section>
-
-      <div className="fixed bottom-5 left-0 flex w-full items-center justify-center">
-        <p className="text-muted-foreground max-w-prose pt-1 text-xs leading-5 font-normal text-pretty md:text-sm">
-          Need help getting set up? Check out the{' '}
-          <a
-            target="_blank"
-            rel="noopener noreferrer"
-            href="https://docs.livekit.io/agents/start/voice-ai/"
-            className="underline"
-          >
-            Voice AI quickstart
-          </a>
-          .
-        </p>
-      </div>
     </div>
   );
 };

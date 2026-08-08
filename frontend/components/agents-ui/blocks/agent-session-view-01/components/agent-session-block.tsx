@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
+import { Track } from 'livekit-client';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
 import {
@@ -151,6 +152,8 @@ export interface AgentSessionView_01Props {
   audioVisualizerRadialRadius?: number;
   /** Stroke width of the wave path when `audioVisualizerType` is `wave`. */
   audioVisualizerWaveLineWidth?: number;
+  /** Called when the microphone or another media device cannot be accessed. */
+  onDeviceError?: (error: { source: Track.Source; error: Error }) => void;
   /** Optional class name merged onto the outer `<section>` container. */
   className?: string;
 }
@@ -171,6 +174,7 @@ export function AgentSessionView_01({
   audioVisualizerRadialBarCount,
   audioVisualizerRadialRadius,
   audioVisualizerWaveLineWidth,
+  onDeviceError,
   ref,
   className,
   ...props
@@ -265,6 +269,7 @@ export function AgentSessionView_01({
             isChatOpen={chatOpen}
             isConnected={session.isConnected}
             onDisconnect={session.end}
+            onDeviceError={onDeviceError}
             onIsChatOpenChange={setChatOpen}
           />
         </div>

@@ -42,10 +42,15 @@ provides it. Say when information is general or unverified.
 
 LANGUAGE
 Mirror the caller's language and level of formality. If they use Hindi mixed with
-English, reply naturally in the same Hinglish register. If they switch to another
+English, reply naturally in the same Hinglish register. If they speak Hindi, reply
+primarily in Hindi and do not default to English. If they switch to another
 language, respond in that language when you can; otherwise explain briefly and ask
 whether English or Hindi is preferred. Keep sentences short and ask one question
-at a time.
+at a time. Use feminine Hindi grammar for yourself because the voice is female:
+say "कर सकती हूँ", "बता सकती हूँ", and "समझ सकती हूँ"; never use masculine forms
+such as "कर सकता हूँ" when referring to yourself. Address the caller respectfully
+with neutral plural forms such as "आप बता सकते हैं" and "आप साझा कर सकते हैं";
+do not address the caller as "कर सकती है".
 
 GUARDRAILS
 - Never issue an official alert, evacuation order, shelter assignment, or all-clear.
@@ -68,11 +73,9 @@ Use plain speech without complex formatting, emojis, or symbols.
 """
 
 FIRST_TURN_GREETING = """
-Namaste. I am your Disaster Response assistant. I can help you describe what
-happened, note your location and immediate needs, and prepare information to share
-with local responders. I cannot verify live alerts, issue evacuation or all-clear
-instructions, or dispatch help. Are you calling about a flood, drought, or another
-emergency?
+नमस्ते। मैं Aapda Sahaayak हूँ, आपकी Disaster Response voice assistant। Flood,
+drought या relief support में मैं आपकी मदद कर सकती हूँ। आपको किस emergency का
+सामना है?
 """
 
 
@@ -120,7 +123,7 @@ async def my_agent(ctx: JobContext):
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
         # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=deepgram.STT(model="nova-3"),
+        stt=deepgram.STT(model="nova-3", language="multi"),
         # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
         # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=google.LLM(
@@ -131,7 +134,7 @@ async def my_agent(ctx: JobContext):
         # Recommended Indian voices: Anisha, Samar, and Pooja. Day 1 uses Anisha.
         tts=murf.TTS(
                 voice="Anisha",
-                locale="en-IN",
+                locale="hi-IN",
                 style="Conversation",
                 tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
                 text_pacing=True
