@@ -44,10 +44,15 @@ export async function POST(req: Request) {
       );
     }
       
-    // Generate participant token
+    // Keep one stable, non-PII identity per browser so the agent can find memory
+    // from an earlier call without exposing a caller identifier in the UI.
     const participantName = 'user';
-    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
-    const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
+    const userCookie = req.headers
+      .get('cookie')
+      ?.match(/(?:^|;\s*)aapda_user_id=([^;]+)/)?.[1];
+    const participantIdentity =
+      userCookie ?? `voice_assistant_user_${crypto.randomUUID()}`;
+    const roomName = `voice_assistant_room_${participantIdentity}--${crypto.randomUUID()}`;
 
     const participantToken = await createParticipantToken(
       { identity: participantIdentity, name: participantName },
@@ -65,6 +70,12 @@ export async function POST(req: Request) {
     const headers = new Headers({
       'Cache-Control': 'no-store',
     });
+    if (!userCookie) {
+      headers.append(
+        'Set-Cookie',
+        `aapda_user_id=${participantIdentity}; Path=/; Max-Age=31536000; SameSite=Lax`
+      );
+    }
     return NextResponse.json(data, { headers });
   } catch (error) {
     if (error instanceof Error) {

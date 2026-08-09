@@ -5,12 +5,14 @@ interface ConnectionStateViewProps {
   state: 'connecting' | 'ended';
   onStartCall: () => void | Promise<void>;
   errorMessage?: string | null;
+  isStarting?: boolean;
 }
 
 export function ConnectionStateView({
   state,
   onStartCall,
   errorMessage,
+  isStarting = false,
 }: ConnectionStateViewProps) {
   const isConnecting = state === 'connecting';
 
@@ -53,10 +55,17 @@ export function ConnectionStateView({
           <Button
             size="lg"
             onClick={onStartCall}
+            disabled={isStarting}
             className="mt-9 h-13 rounded-full bg-[#173c39] px-7 font-mono text-xs font-bold tracking-[0.12em] text-[#f5f0e8] uppercase hover:bg-[#285a54] dark:bg-[#eff8ed] dark:text-[#173c39] dark:hover:bg-white"
           >
-            {errorMessage ? <RotateCcw className="mr-2 size-4" /> : <Mic className="mr-2 size-4" />}
-            {errorMessage ? 'Try again' : 'Start another check-in'}
+            {isStarting ? (
+              <LoaderCircle className="mr-2 size-4 animate-spin" />
+            ) : errorMessage ? (
+              <RotateCcw className="mr-2 size-4" />
+            ) : (
+              <Mic className="mr-2 size-4" />
+            )}
+            {isStarting ? 'Preparing next check-in' : errorMessage ? 'Try again' : 'Start another check-in'}
           </Button>
         )}
       </div>

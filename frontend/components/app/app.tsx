@@ -33,10 +33,11 @@ export function App({ appConfig }: AppProps) {
       : TokenSource.endpoint('/api/token');
   }, [appConfig]);
 
-  const session = useSession(
-    tokenSource,
-    appConfig.agentName ? { agentName: appConfig.agentName } : undefined
-  );
+  const session = useSession(tokenSource, {
+    ...(appConfig.agentName ? { agentName: appConfig.agentName } : {}),
+    // The local Silero/inference worker can take over a minute to warm up.
+    agentConnectTimeoutMilliseconds: 120_000,
+  });
 
   return (
     <AgentSessionProvider session={session}>

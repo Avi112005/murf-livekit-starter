@@ -81,6 +81,7 @@ export function ViewController({ appConfig }: ViewControllerProps) {
   const [hasStarted, setHasStarted] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [microphoneError, setMicrophoneError] = useState<string | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
   const microphoneTrack = session.local.microphoneTrack;
   const microphoneEnabled = microphoneTrack ? !microphoneTrack.publication.isMuted : false;
 
@@ -91,16 +92,23 @@ export function ViewController({ appConfig }: ViewControllerProps) {
   }, [microphoneEnabled]);
 
   const handleStartCall = async () => {
+    if (isStarting) return;
+
     setHasStarted(true);
     setStartError(null);
     setMicrophoneError(null);
+    setIsStarting(true);
 
     try {
+      // Let the previous LiveKit room finish closing before creating the next one.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
       await start();
     } catch {
       setStartError(
         'We could not start the check-in. Allow microphone access for localhost:3000 in your browser settings, then try again.'
       );
+    } finally {
+      setIsStarting(false);
     }
   };
 
@@ -127,22 +135,24 @@ export function ViewController({ appConfig }: ViewControllerProps) {
         />
       )}
       {/* Connecting view */}
-      {!isConnected && hasStarted && isConnecting && (
+      {!isConnected && hasStarted && (isStarting || isConnecting) && (
         <motion.div key="connecting" {...VIEW_MOTION_PROPS}>
           <ConnectionStateView
             state="connecting"
             onStartCall={handleStartCall}
             errorMessage={startError}
+            isStarting={isStarting}
           />
         </motion.div>
       )}
       {/* Ended or failed view */}
-      {!isConnected && hasStarted && !isConnecting && (
+      {!isConnected && hasStarted && !isStarting && !isConnecting && (
         <motion.div key="ended" {...VIEW_MOTION_PROPS}>
           <ConnectionStateView
             state="ended"
             onStartCall={handleStartCall}
             errorMessage={startError}
+            isStarting={isStarting}
           />
         </motion.div>
       )}
