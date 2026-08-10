@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -18,8 +19,9 @@ from livekit.agents import (
     function_tool,
     room_io,
     tokenize,
+    utils,
 )
-from livekit.agents.llm import ChatContext, ChatMessage
+from livekit.agents.llm import ChatContext, ChatMessage, ToolError
 from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 
 logger = logging.getLogger("agent")
@@ -126,6 +128,132 @@ def _save_caller(
 
     return "Caller memory was saved with consent."
 
+
+WEATHER_CODE_LABELS = {
+    0: "clear sky",
+    1: "mainly clear",
+    2: "partly cloudy",
+    3: "overcast",
+    45: "foggy",
+    48: "depositing rime fog",
+    51: "light drizzle",
+    53: "moderate drizzle",
+    55: "dense drizzle",
+    61: "slight rain",
+    63: "moderate rain",
+    65: "heavy rain",
+    71: "slight snow",
+    73: "moderate snow",
+    75: "heavy snow",
+    80: "slight rain showers",
+    81: "moderate rain showers",
+    82: "violent rain showers",
+    95: "thunderstorm",
+    96: "thunderstorm with slight hail",
+    99: "thunderstorm with heavy hail",
+}
+
+
+def _format_observation_time(value: str, timezone_name: str) -> str:
+    observed_at = datetime.fromisoformat(value)
+    date_text = observed_at.strftime("%d %B %Y").lstrip("0")
+    time_text = observed_at.strftime("%I:%M %p").lstrip("0")
+    readable_timezone = (
+        "India Standard Time" if timezone_name == "Asia/Kolkata" else timezone_name.replace("_", " ")
+    )
+    return f"{date_text} at {time_text} {readable_timezone}"
+
+
+async def _fetch_local_weather(district: str) -> str:
+    try:
+        async with asyncio.timeout(8):
+            http_session = utils.http_context.http_session()
+            async with http_session.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={
+                    "name": district,
+                    "count": 1,
+                    "language": "en",
+                    "format": "json",
+                },
+            ) as geocoding_response:
+                if geocoding_response.status != 200:
+                    raise ToolError("The live weather source is unavailable right now.")
+                geocoding_data = await geocoding_response.json()
+
+            results = geocoding_data.get("results") or []
+            if not results:
+                raise ToolError(
+                    f"I could not find a location matching {district}. Please provide a district or city."
+                )
+
+            location = results[0]
+            async with http_session.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": location["latitude"],
+                    "longitude": location["longitude"],
+                    "current": "temperature_2m,precipitation,rain,weather_code,wind_speed_10m",
+                    "hourly": "precipitation_probability",
+                    "forecast_days": 1,
+                    "timezone": "auto",
+                },
+            ) as weather_response:
+                if weather_response.status != 200:
+                    raise ToolError("The live weather source is unavailable right now.")
+                weather_data = await weather_response.json()
+
+        current = weather_data["current"]
+        hourly = weather_data.get("hourly", {})
+        current_time = current["time"]
+        timezone_name = weather_data.get("timezone", "local time")
+        readable_observation_time = _format_observation_time(current_time, timezone_name)
+        try:
+            local_timezone = ZoneInfo(timezone_name)
+            observed_at = datetime.fromisoformat(current_time).replace(tzinfo=local_timezone)
+            retrieved_at = datetime.now(local_timezone)
+            age_minutes = max(0, round((retrieved_at - observed_at).total_seconds() / 60))
+            readable_retrieval_time = _format_observation_time(
+                retrieved_at.isoformat(timespec="minutes"), timezone_name
+            )
+        except (ValueError, TypeError, KeyError):
+            age_minutes = None
+            readable_retrieval_time = "the current time"
+        current_hour = current_time[:13]
+        hourly_index = next(
+            (
+                index
+                for index, hourly_time in enumerate(hourly.get("time", []))
+                if hourly_time.startswith(current_hour)
+            ),
+            0,
+        )
+        rain_probability = hourly["precipitation_probability"][hourly_index]
+        condition = WEATHER_CODE_LABELS.get(current["weather_code"], "unknown conditions")
+        place = ", ".join(
+            value for value in (location.get("name"), location.get("admin1"), location.get("country")) if value
+        )
+
+        return (
+            f"Latest available model update for {place}: {readable_observation_time}. "
+            f"Retrieved at {readable_retrieval_time}"
+            f"{f' and approximately {age_minutes} minutes old' if age_minutes is not None else ''}: "
+            f"{condition}; "
+            f"temperature {current['temperature_2m']} °C; precipitation "
+            f"{current['precipitation']} mm; rain {current['rain']} mm; "
+            f"wind {current['wind_speed_10m']} km/h; precipitation probability "
+            f"for this hour {rain_probability}%. Source: Open-Meteo forecast API. "
+            "This is model-based weather data, not an official disaster alert, "
+            "evacuation order, or all-clear."
+        )
+    except ToolError:
+        raise
+    except Exception as error:
+        logger.warning("Local weather lookup failed: %s", error)
+        raise ToolError(
+            "The live weather source is unavailable right now. I cannot provide current conditions."
+        ) from error
+
 # Day 2 persona and operating boundaries for the Disaster Response track.
 SYSTEM_PROMPT = """
 IDENTITY
@@ -146,6 +274,15 @@ You know general disaster-preparedness concepts for floods, droughts, evacuation
 planning, relief requests, and welfare check-ins. You do not have verified live
 weather, alert, map, shelter, road, or rescue data unless a future tool explicitly
 provides it. Say when information is general or unverified.
+
+TOOLS
+When the caller asks for current weather, rain, wind, or local conditions for a
+named district or city, call lookup_local_weather_conditions. Always report the
+observation time and Open-Meteo source returned by the tool. Read the observation
+time naturally as a date, clock time, and local timezone; never read an ISO timestamp
+or a timezone identifier character by character. This tool is not an official alert
+service; never turn its result into an evacuation order or all-clear. If the tool
+reports that data is unavailable, say so clearly and do not guess.
 
 MEMORY
 The application loads the caller record before the first greeting. If a record is
@@ -320,6 +457,23 @@ class Assistant(Agent):
             mobility_needs,
             consent_given,
         )
+
+    @function_tool()
+    async def lookup_local_weather_conditions(
+        self,
+        context: RunContext,
+        district: str,
+    ) -> str:
+        """Fetch current weather conditions for a named Indian district or city.
+
+        Call this when the caller asks about current rain, temperature, wind, or
+        local weather conditions. Do not use it to issue official disaster alerts,
+        evacuation orders, shelter instructions, or all-clears.
+
+        Args:
+            district: The district or city to look up, such as Surat or Ahmedabad.
+        """
+        return await _fetch_local_weather(district)
 
 
 server = AgentServer()

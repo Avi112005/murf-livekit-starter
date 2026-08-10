@@ -161,6 +161,18 @@ Some voice options:
 
 Browse all 150+ voices: [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library).
 
+### Disaster Response weather tool
+
+The Disaster Response agent includes `lookup_local_weather_conditions`, which
+geocodes a named district or city and fetches current model-based weather
+conditions from the public [Open-Meteo API](https://open-meteo.com/). The response
+includes the observation time and source. It is not an official disaster alert,
+evacuation order, or all-clear service. If the API is unavailable, the agent says
+that current conditions cannot be provided instead of guessing.
+
+**Data classification:** This is live external API data fetched at request time,
+not a local dataset or cached response.
+
 ### STT (Speech-to-Text)
 
 Default is Deepgram Nova-3. Change in the `AgentSession(stt=...)` call:
