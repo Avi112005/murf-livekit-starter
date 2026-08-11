@@ -173,6 +173,24 @@ that current conditions cannot be provided instead of guessing.
 **Data classification:** This is live external API data fetched at request time,
 not a local dataset or cached response.
 
+### Day 6 outbound welfare checks
+
+The outbound Disaster Response use case is a scheduled welfare check for a
+household that has requested follow-up or has saved mobility needs. The call uses
+LiveKit SIP with an outbound trunk connected to a provider such as Twilio.
+
+Configure the LiveKit SIP outbound trunk ID in `LIVEKIT_SIP_OUTBOUND_TRUNK_ID`,
+then run:
+
+```powershell
+uv run python src/outbound_call.py +91xxxxxxxxxx
+```
+
+The destination must be a number you own or have permission to call. The first
+sentences identify Aapda Sahaayak, explain the welfare-check purpose, and tell the
+recipient to say `stop` or hang up to end the call. Configure the `my-agent` worker
+to dispatch into the outbound room in LiveKit Cloud before placing a call.
+
 ### STT (Speech-to-Text)
 
 Default is Deepgram Nova-3. Change in the `AgentSession(stt=...)` call:

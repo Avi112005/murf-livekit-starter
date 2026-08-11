@@ -345,6 +345,12 @@ drought या relief support में मैं आपकी मदद कर 
 सामना है?"
 """
 
+OUTBOUND_GREETING_TEXT = (
+    "Namaste, this is Aapda Sahaayak, an automated Disaster Response assistant "
+    "calling for a scheduled household welfare check. If this is not a good time, "
+    "say stop or hang up and I will end the call."
+)
+
 
 def _first_turn_instructions(memory: str) -> str:
     if memory.startswith("Saved caller record found."):
@@ -493,6 +499,7 @@ async def my_agent(ctx: JobContext):
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
+    is_outbound_room = ctx.room.name.startswith("aapda-outbound-")
 
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
@@ -510,8 +517,13 @@ async def my_agent(ctx: JobContext):
         tts=murf.TTS(
                 voice="Anisha",
                 style="Conversation",
-                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-                text_pacing=True
+                sample_rate=16000 if is_outbound_room else 24000,
+                tokenizer=tokenize.basic.SentenceTokenizer(
+                    min_sentence_len=1 if is_outbound_room else 2
+                ),
+                text_pacing=not is_outbound_room,
+                min_buffer_size=1 if is_outbound_room else 3,
+                max_buffer_delay_in_ms=500 if is_outbound_room else 0,
             ),
         # VAD-only turn detection avoids a second local inference model competing
         # with Silero, while Deepgram still handles multilingual transcription.
@@ -519,7 +531,7 @@ async def my_agent(ctx: JobContext):
         vad=ctx.proc.userdata["vad"],
         # allow the LLM to generate a response while waiting for the end of turn
         # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
-        preemptive_generation=True,
+        preemptive_generation=not is_outbound_room,
     )
 
     # To use a realtime model instead of a voice pipeline, use the following session setup instead.
@@ -540,8 +552,13 @@ async def my_agent(ctx: JobContext):
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
 
-    # Start the session, which initializes the voice pipeline and warms up the models
     assistant = Assistant(ctx.room.name)
+
+    # For outbound calls the SIP participant is already in the room waiting;
+    # connect first so the signal does not time out during model warm-up.
+    if is_outbound_room:
+        await ctx.connect()
+
     await session.start(
         agent=assistant,
         room=ctx.room,
@@ -557,9 +574,10 @@ async def my_agent(ctx: JobContext):
         ),
     )
 
-    # Join the room after the agent session is initialized, then attach memory to
-    # the stable browser identity before the first spoken reply.
-    await ctx.connect()
+    # Join the room after the agent session is initialized for browser calls.
+    if not is_outbound_room:
+        await ctx.connect()
+    is_sip_call = is_outbound_room
     room_prefix = "voice_assistant_room_"
     room_identity = ctx.room.name.removeprefix(room_prefix)
     assistant.user_id = room_identity.split("--", 1)[0]
@@ -567,7 +585,20 @@ async def my_agent(ctx: JobContext):
     caller_memory = await asyncio.to_thread(_lookup_caller, assistant.user_id)
 
     # Establish the agent's role and limits before the caller speaks.
-    await session.generate_reply(instructions=_first_turn_instructions(caller_memory))
+    if is_sip_call:
+        # Wait for the SIP participant (phone callee) to join before greeting.
+        try:
+            await asyncio.wait_for(
+                ctx.wait_for_participant(
+                    kind=rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                ),
+                timeout=60.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Timed out waiting for SIP participant")
+        await session.say(OUTBOUND_GREETING_TEXT)
+    else:
+        await session.generate_reply(instructions=_first_turn_instructions(caller_memory))
 
 
 if __name__ == "__main__":
