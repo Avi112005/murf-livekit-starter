@@ -1,11 +1,14 @@
 import asyncio
 import logging
+import os
 import sqlite3
+import uuid
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import aiohttp
 from dotenv import load_dotenv
 from livekit import rtc
 from livekit.agents import (
@@ -127,6 +130,72 @@ def _save_caller(
         connection.commit()
 
     return "Caller memory was saved with consent."
+
+
+def _create_escalation_record(
+    user_id: str,
+    name: str,
+    situation: str,
+    checked: str,
+    urgency: str,
+    language: str,
+    follow_up: str,
+    consent_given: bool,
+) -> tuple[str, str]:
+    if not consent_given:
+        return "", "Permission was not given. No human-help request was created."
+
+    reference_id = f"AID-{uuid.uuid4().hex[:8].upper()}"
+    created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    slack_summary = (
+        f"*Human-help request {reference_id}*\n"
+        f"*Who:* {name}\n*Situation:* {situation}\n*Already checked:* {checked}\n"
+        f"*Urgency:* {urgency}\n*Language/follow-up:* {language}; {follow_up}"
+    )
+    with closing(_open_memory_db()) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS escalations (
+                reference_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                situation TEXT NOT NULL,
+                checked TEXT NOT NULL,
+                urgency TEXT NOT NULL,
+                language TEXT NOT NULL,
+                follow_up TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO escalations (
+                reference_id, user_id, name, situation, checked, urgency,
+                language, follow_up, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
+            """,
+            (
+                reference_id,
+                user_id,
+                name.strip() or "Caller",
+                situation.strip(),
+                checked.strip(),
+                urgency.strip(),
+                language.strip(),
+                follow_up.strip(),
+                created_at,
+            ),
+        )
+        connection.commit()
+
+    return (
+        f"Human-help request {reference_id} was created. It is open for review. "
+        "The team will use the summary to decide the next follow-up; no immediate "
+        "response time is guaranteed.",
+        slack_summary,
+    )
 
 
 WEATHER_CODE_LABELS = {
@@ -254,6 +323,17 @@ async def _fetch_local_weather(district: str) -> str:
             "The live weather source is unavailable right now. I cannot provide current conditions."
         ) from error
 
+
+async def _send_escalation_to_slack(summary: str) -> None:
+    webhook_url = os.getenv("SLACK_ESCALATION_WEBHOOK_URL")
+    if not webhook_url:
+        return
+    async with aiohttp.ClientSession() as session, session.post(
+        webhook_url, json={"text": summary}, timeout=8
+    ) as response:
+            if response.status >= 300:
+                raise RuntimeError(f"Slack returned HTTP {response.status}")
+
 # Day 2 persona and operating boundaries for the Disaster Response track.
 SYSTEM_PROMPT = """
 IDENTITY
@@ -303,6 +383,15 @@ acknowledge that. Save only location, household size, mobility needs, language
 preference, and the last check-in. Never save OTPs, PINs, passwords, Aadhaar
 numbers, medical notes, or other sensitive data.
 
+HUMAN HELP
+Create a human-help request only when the caller is trapped or injured, or needs
+urgent local help that you cannot provide. Before sharing anything, explain the
+short summary you want to send: who needs help, what happened, what you checked,
+urgency, language, and preferred follow-up. Ask for explicit yes or no permission.
+Call create_escalation only after a clear yes in a later user turn. If permission is
+denied, do not create a request. After success, read the reference ID and explain
+that the request is open for human review without promising an immediate response.
+
 LANGUAGE
 Always follow the language of the latest user turn; it overrides saved language
 preferences and the voice locale. If the latest turn is primarily English, reply
@@ -337,7 +426,7 @@ STYLE
 Be calm, respectful, and direct. Do not create panic or false reassurance. Confirm
 important details by repeating them briefly. Handle silence with one gentle prompt.
 Use plain speech without complex formatting, emojis, or symbols.
-"""
+    """
 
 NEW_CALL_GREETING = """
 Say: "नमस्ते। मैं Aapda Sahaayak हूँ, आपकी Disaster Response voice assistant। Flood,
@@ -481,6 +570,54 @@ class Assistant(Agent):
         """
         return await _fetch_local_weather(district)
 
+    @function_tool()
+    async def create_escalation(
+        self,
+        context: RunContext,
+        name: str,
+        situation: str,
+        checked: str,
+        urgency: str,
+        language: str,
+        follow_up: str,
+        consent_given: bool,
+    ) -> str:
+        """Create a concise human-help request for an urgent local situation.
+
+        Use only when the caller is trapped or injured, or needs urgent local help
+        the agent cannot provide. Ask for explicit permission in a previous user
+        turn before calling this tool.
+
+        Args:
+            name: The person or household needing help.
+            situation: What happened, without sensitive identifiers.
+            checked: What the agent already checked or explained.
+            urgency: Immediate, urgent, or non-urgent.
+            language: The caller's language and preferred follow-up method.
+            follow_up: How the caller prefers a human to follow up.
+            consent_given: True only after explicit permission to share the summary.
+        """
+        if not consent_given:
+            return "Permission was not given. No human-help request was created."
+
+        result, summary = await asyncio.to_thread(
+            _create_escalation_record,
+            self.user_id,
+            name,
+            situation,
+            checked,
+            urgency,
+            language,
+            follow_up,
+            consent_given,
+        )
+        try:
+            await _send_escalation_to_slack(summary)
+        except Exception as error:
+            logger.exception("Slack escalation delivery failed: %s", error)
+            return f"{result} However, Slack delivery failed, so tell the caller the request is saved locally with its reference ID."
+        return f"{result} The summary was also sent to the human-help Slack channel."
+
 
 server = AgentServer()
 
@@ -529,9 +666,11 @@ async def my_agent(ctx: JobContext):
         # with Silero, while Deepgram still handles multilingual transcription.
         turn_detection="vad",
         vad=ctx.proc.userdata["vad"],
+        min_endpointing_delay=0.25,
+        max_endpointing_delay=1.0,
         # allow the LLM to generate a response while waiting for the end of turn
         # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
-        preemptive_generation=not is_outbound_room,
+        preemptive_generation=False,
     )
 
     # To use a realtime model instead of a voice pipeline, use the following session setup instead.
