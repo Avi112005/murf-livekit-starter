@@ -52,8 +52,51 @@ def _open_memory_db() -> sqlite3.Connection:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS calls (
+            call_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            outcome TEXT NOT NULL DEFAULT 'failed',
+            success_reason TEXT,
+            failure_category TEXT,
+            started_at TEXT NOT NULL,
+            ended_at TEXT
+        )
+        """
+    )
     connection.commit()
     return connection
+
+
+def _record_call_start(call_id: str, user_id: str, channel: str) -> None:
+    with closing(_open_memory_db()) as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO calls (call_id, user_id, channel, started_at) VALUES (?, ?, ?, ?)",
+            (call_id, user_id, channel, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+        )
+        connection.commit()
+
+
+def _record_call_outcome(
+    call_id: str,
+    outcome: str,
+    reason: str | None = None,
+    failure_category: str | None = None,
+) -> None:
+    with closing(_open_memory_db()) as connection:
+        existing = connection.execute(
+            "SELECT outcome, failure_category FROM calls WHERE call_id = ?",
+            (call_id,),
+        ).fetchone()
+        if existing and (existing["outcome"] == "successful" or existing["failure_category"]):
+            return
+        connection.execute(
+            "UPDATE calls SET outcome = ?, success_reason = ?, failure_category = ?, ended_at = ? WHERE call_id = ?",
+            (outcome, reason, failure_category, datetime.now(timezone.utc).isoformat(timespec="seconds"), call_id),
+        )
+        connection.commit()
 
 
 def _lookup_caller(user_id: str) -> str:
@@ -334,6 +377,12 @@ async def _send_escalation_to_slack(summary: str) -> None:
             if response.status >= 300:
                 raise RuntimeError(f"Slack returned HTTP {response.status}")
 
+
+def _mark_current_call_success(agent: "Assistant", reason: str) -> None:
+    call_id = agent.call_id
+    if call_id:
+        _record_call_outcome(call_id, "successful", reason)
+
 # Day 2 persona and operating boundaries for the Disaster Response track.
 SYSTEM_PROMPT = """
 IDENTITY
@@ -454,6 +503,8 @@ def _first_turn_instructions(memory: str) -> str:
 class Assistant(Agent):
     def __init__(self, user_id: str) -> None:
         self.user_id = user_id
+        self.call_id: str | None = None
+        self.completed_user_turns = 0
         super().__init__(instructions=SYSTEM_PROMPT)
 
     async def on_user_turn_completed(
@@ -462,6 +513,7 @@ class Assistant(Agent):
         new_message: ChatMessage,
     ) -> None:
         """Make the latest transcript language explicit for the next LLM turn."""
+        self.completed_user_turns += 1
         text = new_message.text_content or ""
         lowered = text.lower()
         has_devanagari = any("\u0900" <= character <= "\u097f" for character in text)
@@ -568,7 +620,21 @@ class Assistant(Agent):
         Args:
             district: The district or city to look up, such as Surat or Ahmedabad.
         """
-        return await _fetch_local_weather(district)
+        try:
+            result = await _fetch_local_weather(district)
+        except ToolError as error:
+            category = "API error" if "unavailable" in str(error).lower() else "tool failure"
+            if self.call_id:
+                await asyncio.to_thread(
+                    _record_call_outcome,
+                    self.call_id,
+                    "failed",
+                    str(error),
+                    category,
+                )
+            raise
+        _mark_current_call_success(self, "completed weather conversation")
+        return result
 
     @function_tool()
     async def create_escalation(
@@ -598,6 +664,14 @@ class Assistant(Agent):
             consent_given: True only after explicit permission to share the summary.
         """
         if not consent_given:
+            if self.call_id:
+                await asyncio.to_thread(
+                    _record_call_outcome,
+                    self.call_id,
+                    "failed",
+                    "caller declined permission to share escalation summary",
+                    "user declined",
+                )
             return "Permission was not given. No human-help request was created."
 
         result, summary = await asyncio.to_thread(
@@ -615,7 +689,16 @@ class Assistant(Agent):
             await _send_escalation_to_slack(summary)
         except Exception as error:
             logger.exception("Slack escalation delivery failed: %s", error)
+            if self.call_id:
+                await asyncio.to_thread(
+                    _record_call_outcome,
+                    self.call_id,
+                    "failed",
+                    "Slack delivery failed",
+                    "API error",
+                )
             return f"{result} However, Slack delivery failed, so tell the caller the request is saved locally with its reference ID."
+        _mark_current_call_success(self, "completed human-help conversation")
         return f"{result} The summary was also sent to the human-help Slack channel."
 
 
@@ -637,6 +720,8 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
     is_outbound_room = ctx.room.name.startswith("aapda-outbound-")
+    call_id = ctx.room.name if is_outbound_room else uuid.uuid4().hex
+    channel = "sip" if is_outbound_room else "browser"
 
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
@@ -692,6 +777,8 @@ async def my_agent(ctx: JobContext):
     # await avatar.start(session, room=ctx.room)
 
     assistant = Assistant(ctx.room.name)
+    assistant.call_id = call_id
+    await asyncio.to_thread(_record_call_start, call_id, ctx.room.name, channel)
 
     # For outbound calls the SIP participant is already in the room waiting;
     # connect first so the signal does not time out during model warm-up.
@@ -735,9 +822,37 @@ async def my_agent(ctx: JobContext):
             )
         except asyncio.TimeoutError:
             logger.warning("Timed out waiting for SIP participant")
+            _record_call_outcome(call_id, "failed", "callee did not answer", "no response")
+            return
         await session.say(OUTBOUND_GREETING_TEXT)
     else:
         await session.generate_reply(instructions=_first_turn_instructions(caller_memory))
+
+    # Session shutdown is managed by AgentSession; avoid blocking the job on a
+    # nonexistent JobContext wait method. Successful tool calls already update
+    # the outcome, while this records a normal ended call when no success occurred.
+    @ctx.room.on("participant_disconnected")
+    def record_call_end(participant: rtc.RemoteParticipant) -> None:
+        if participant.identity == assistant.user_id or is_sip_call:
+            try:
+                if assistant.completed_user_turns >= 2:
+                    _record_call_outcome(call_id, "successful", "completed normal conversation")
+                else:
+                    category = (
+                        "user hang-up"
+                        if assistant.completed_user_turns > 0
+                        else "no response"
+                        if is_sip_call
+                        else "incomplete task"
+                    )
+                    _record_call_outcome(
+                        call_id,
+                        "failed",
+                        "conversation ended before a success condition",
+                        category,
+                    )
+            except Exception as error:
+                logger.warning("Could not record call outcome: %s", error)
 
 
 if __name__ == "__main__":

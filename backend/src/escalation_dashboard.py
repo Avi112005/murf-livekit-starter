@@ -8,6 +8,31 @@ from agent import _open_memory_db
 
 class EscalationHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/analytics":
+            with _open_memory_db() as connection:
+                columns = {
+                    column[1]
+                    for column in connection.execute("PRAGMA table_info(calls)").fetchall()
+                }
+                if "failure_category" not in columns:
+                    connection.execute("ALTER TABLE calls ADD COLUMN failure_category TEXT")
+                    connection.commit()
+                row = connection.execute(
+                    "SELECT COUNT(*) total, SUM(outcome = 'successful') successful FROM calls WHERE ended_at IS NOT NULL"
+                ).fetchone()
+                categories = connection.execute(
+                    "SELECT COALESCE(failure_category, CASE WHEN channel = 'sip' THEN 'no response' ELSE 'incomplete task' END) category, COUNT(*) count FROM calls WHERE outcome = 'failed' AND ended_at IS NOT NULL GROUP BY category"
+                ).fetchall()
+            total = row["total"] or 0
+            successful = row["successful"] or 0
+            self._send_json({
+                "total": total,
+                "successful": successful,
+                "failed": total - successful,
+                "success_rate": round((successful / total) * 100, 1) if total else 0,
+                "failure_categories": [dict(item) for item in categories],
+            })
+            return
         if self.path != "/escalations":
             self.send_error(404)
             return
@@ -38,7 +63,10 @@ class EscalationHandler(BaseHTTPRequestHandler):
                 """
             ).fetchall()
 
-        payload = json.dumps({"escalations": [dict(row) for row in rows]}).encode()
+        self._send_json({"escalations": [dict(row) for row in rows]})
+
+    def _send_json(self, data):
+        payload = json.dumps(data).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
