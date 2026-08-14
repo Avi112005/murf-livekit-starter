@@ -441,6 +441,13 @@ Call create_escalation only after a clear yes in a later user turn. If permissio
 denied, do not create a request. After success, read the reference ID and explain
 that the request is open for human review without promising an immediate response.
 
+SPECIALIST HANDOFF
+For questions about finding a shelter, shelter capacity, temporary accommodation,
+or where to go after a disaster, transfer to the Shelter Information Specialist.
+Do not answer these questions yourself and do not only say that you will transfer.
+You must call transfer_to_shelter_specialist. Before the tool call, tell the caller
+you are connecting them to that specialist.
+
 LANGUAGE
 Always follow the language of the latest user turn; it overrides saved language
 preferences and the voice locale. If the latest turn is primarily English, reply
@@ -498,6 +505,61 @@ def _first_turn_instructions(memory: str) -> str:
             f"accurate. Do not mention the database. Saved record: {memory}"
         )
     return NEW_CALL_GREETING
+
+
+SHELTER_SPECIALIST_PROMPT = """
+You are Aapda Sahaayak's Shelter Information Specialist for Disaster Response in
+India. Your only job is to help callers clarify shelter needs: their district or
+city, accessibility needs, household size, and whether they need temporary
+accommodation. Continue from the conversation context without asking them to repeat
+their full story.
+
+You do not have a verified live shelter directory or capacity feed. Never invent a
+shelter name, address, capacity, opening status, or available space. Say clearly
+when live shelter information is unavailable and suggest contacting local disaster
+authorities or 112 for immediate danger. You are not an emergency dispatcher and
+cannot reserve a shelter or dispatch transport.
+
+Use the caller's latest language and native script. English questions require an
+entirely English answer; Hindi questions require Devanagari Hindi. Be concise, calm,
+and respectful. Introduce yourself as the Shelter Information Specialist only once
+when taking over. Never repeat the introduction or start later answers with
+"Namaste, I am...".
+"""
+
+
+class ShelterInformationAgent(Agent):
+    def __init__(self, chat_ctx: ChatContext | None = None) -> None:
+        super().__init__(
+            instructions=SHELTER_SPECIALIST_PROMPT,
+            chat_ctx=chat_ctx,
+            tts=murf.TTS(
+                voice="Samar",
+                style="Conversation",
+                text_pacing=True,
+                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+            ),
+        )
+
+    async def on_enter(self) -> None:
+        await self.session.say(
+            "Namaste, I am the Shelter Information Specialist. "
+            "I have your shelter request and will continue from what you already shared. "
+            "Please tell me your household size and any accessibility needs."
+        )
+
+    async def on_user_turn_completed(
+        self,
+        turn_ctx: ChatContext,
+        new_message: ChatMessage,
+    ) -> None:
+        """Force the specialist to follow the latest user language."""
+        text = new_message.text_content or ""
+        if any("\u0900" <= character <= "\u097f" for character in text):
+            instruction = "The latest user turn is Hindi. Reply in Devanagari Hindi."
+        else:
+            instruction = "The latest user turn is English. Reply entirely in English."
+        turn_ctx.add_message(role="system", content=instruction)
 
 
 class Assistant(Agent):
@@ -559,6 +621,23 @@ class Assistant(Agent):
     #     logger.info(f"Looking up weather for {location}")
     #
     #     return "sunny with a temperature of 70 degrees."
+
+    @function_tool()
+    async def transfer_to_shelter_specialist(
+        self,
+        context: RunContext,
+    ) -> tuple[Agent, str]:
+        """Immediately transfer shelter questions to the specialist agent.
+
+        Use this when the caller asks where to go, whether a shelter has space, or
+        needs help understanding shelter options. Do not use it for immediate danger;
+        use the emergency escalation guidance instead. Do not merely announce a
+        transfer without calling this tool.
+        """
+        specialist = ShelterInformationAgent(
+            chat_ctx=self.chat_ctx.copy(exclude_instructions=True),
+        )
+        return specialist, "Connecting you to our shelter specialist now."
 
     @function_tool()
     async def lookup_caller_memory(self, context: RunContext) -> str:
